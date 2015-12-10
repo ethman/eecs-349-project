@@ -29,8 +29,8 @@ def generate_random_files_spectral_swap():
                     seed.FileName, Constants.DEFAULT_SAMPLE_RATE))
                 continue
 
-            outPath, audioSig = create_looped_file(seed, maxFileLength, file, bkgndOutputFolder)
-            swap_stft_values(audioSig, outPath)
+            audioSig = create_looped_file(seed, maxFileLength, file, bkgndOutputFolder)
+            swap_stft_values(audioSig, bkgndOutputFolder)
 
     # add backgrounds and foregrounds
     for fgndFile in [f for f in os.listdir(foregroundInputFolder) if isfile(join(foregroundInputFolder, f))]:
@@ -49,15 +49,19 @@ def generate_random_files_spectral_swap():
         if len(fgnd) > int(maxFileLength * fgnd.SampleRate):
             fgnd.setLength(int(maxFileLength * fgnd.SampleRate))
 
-        for bkgdFolder in os.listdir(bkgndOutputFolder):
-            for bkgdFile in next(os.walk(join(bkgndOutputFolder, bkgdFolder)))[2]:
-                path = join(bkgndOutputFolder, bkgdFolder, bkgdFile)
-                bkgd = AudioSignal(path)
+        for bkgdFile in next(os.walk(bkgndOutputFolder))[2]:
+            path = join(bkgndOutputFolder, bkgdFile)
 
-                combined = bkgd + fgnd
-                combFileName = splitext(fgndFile)[0] + '__' + bkgdFile
-                combPath = join(mixtureOutputFolder, combFileName)
-                combined.WriteAudioFile(combPath, sampleRate=Constants.DEFAULT_SAMPLE_RATE, verbose=True)
+            if os.path.exists(path):
+                print 'Skipping {0} & {1} because they\'re already combined :)'.format(fgndFile, bkgdFile)
+                continue
+
+            bkgd = AudioSignal(path)
+
+            combined = bkgd + fgnd
+            combFileName = splitext(fgndFile)[0] + '__' + bkgdFile
+            combPath = join(mixtureOutputFolder, combFileName)
+            combined.WriteAudioFile(combPath, sampleRate=Constants.DEFAULT_SAMPLE_RATE, verbose=True)
 
 
 def create_looped_file(audioSignal, maxFileLength, fileName, outputFolder):
@@ -68,14 +72,10 @@ def create_looped_file(audioSignal, maxFileLength, fileName, outputFolder):
 
     audioSignal.setLength(maxSamples)
 
-    newFolder = outputFolder + splitext(fileName)[0]
-
-    if not os.path.exists(newFolder):
-        os.makedirs(newFolder)
-    newPath = newFolder + '/' + splitext(fileName)[0] + '_0.0' + splitext(fileName)[1]
+    newPath = join(outputFolder, splitext(fileName)[0] + '_0.0' + splitext(fileName)[1])
     audioSignal.WriteAudioFile(newPath)
 
-    return newFolder, audioSignal
+    return audioSignal
 
 
 def swap_stft_values(audioSig, outputFolder):
@@ -92,6 +92,13 @@ def swap_stft_values(audioSig, outputFolder):
 
     I, J = audioSig.ComplexSpectrogramData.shape
     for num in np.arange(min, max, step):
+        fileName = path[0] + '_' + str(num) + path[1]
+        outputPath = join(outputFolder, fileName)
+
+        if os.path.exists(outputPath):
+            print 'Skipping {} because it exists :)'.format(fileName)
+            continue
+
         for n in range(int(audioSig.ComplexSpectrogramData.size * num)):
             i1 = random.randint(0, I - 1)
             j1 = random.randint(0, J - 1)
@@ -101,9 +108,8 @@ def swap_stft_values(audioSig, outputFolder):
                 audioSig.ComplexSpectrogramData[i2, j2], audioSig.ComplexSpectrogramData[i1, j1]
 
         audioSig.iSTFT()
-        fileName = path[0] + '_' + str(num) + path[1]
-        outputPath = join(outputFolder, fileName)
         audioSig.WriteAudioFile(outputPath, verbose=True)
+
 
         # FftUtils needs debugging!!!
         # win = WindowAttributes(audioSig.SampleRate)
