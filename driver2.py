@@ -9,6 +9,7 @@ import scipy
 import math
 # import matlab.engine
 import sklearn
+from sklearn import neighbors
 from sklearn.neighbors import NearestNeighbors
 from sklearn import svm
 from sklearn.neural_network import BernoulliRBM
@@ -17,8 +18,9 @@ import matplotlib.pyplot as plt
 import SourceSeparation as nussl
 import os
 from os.path import join, isfile, splitext
-import subprocess
-
+from time import time
+import mir_eval
+from sklearn.svm import SVR
 '''
 4 Major components:
 1) REPET - get either beat spectrum or similarity matrix
@@ -79,7 +81,7 @@ def func(A, B):  # comparematrices(A,B):
     colB = B.shape[1]
 
     # method 1 - n is small dim, m is larger, matnew is new comparison matrix
-    if colA == colB and colA != 1:
+    if colA == colB:
         Aprime = normalize(A, axis=1, norm='l2')
         Bprime = normalize(B, axis=1, norm='l2')
         if colA == 1:
@@ -101,13 +103,17 @@ def func(A, B):  # comparematrices(A,B):
         matnew[0:n, 0:n] = small
         bigprime = normalize(big, axis=1, norm='l2')
         matnewprime = normalize(matnew, axis=1, norm='l2')
-    dist = np.linalg.norm(matnewprime - bigprime, 2)
+    # dist = np.linalg.norm(matnewprime - bigprime, 2)
 
-    print dist
+    return dist
 
 
 def get_mixture_paths():
     folder = 'training/'
+    return get_mixture_paths2(folder)
+
+
+def get_mixture_paths2(folder):
     fileNames = {}
     ext = '.wav'
     for file in [f for f in os.listdir(folder) if isfile(join(folder, f))]:
@@ -150,48 +156,120 @@ def run_repet(path, do_sim):
 
 
 def compute_beat_spectrum_statistics(beat_spectrum):
-    #normalize(beat_spectrum)
+    # normalize(beat_spectrum)
     return np.std(beat_spectrum), np.mean(beat_spectrum)
 
 
-def training(eng, do_sim):
+def training_beat():
     mixture_paths = get_mixture_paths()
-    foreground_paths = get_foreground_paths()
-    background_paths = get_background_paths()
 
+    foreFolder = 'foreground/'
+    max_dur = 441000
 
     r_stds = []
     r_mean = []
+    sdrs = []
     for m_path, (f_path, b_path) in mixture_paths.items():
-        r = run_repet(m_path, do_sim)
+        r = run_repet(m_path, False)
 
-        if do_sim:
-            r_stats = compute_beat_spectrum_statistics(r['feature'])
-            r_stds.append(r_stats[0])
-            r_mean.append(r_stats[1])
+        r_stats = compute_beat_spectrum_statistics(r['feature'])
+        r_stds.append(r_stats[0])
+        r_mean.append(r_stats[1])
 
+        s = nussl.AudioSignal(join(foreFolder, f_path)).AudioData[0:max_dur]
+        se = r['separation'][0].AudioData[0:max_dur]
 
+        mir_eval.separation.validate(s.T, se.T)
+        sdrs.append(mir_eval.separation.bss_eval_sources(s.T, se.T)[0][0])
 
         # call bss_eval
-        # SDR, SIR, SAR, perm = eng.bss_eval_sources(se, s)
+        # global eng
+        # sdrs.append(eng.bss_eval_sources(se, s)[0])
+
+    return r_stds, r_mean, sdrs
 
 
-    plt.plot(r_mean, r_stds, 'ro')
-    plt.xlabel('Beat spectrum mean')
-    plt.ylabel('Beat spectrum std deviation')
-    plt.savefig('beat_spec.png')
+def do_kNN_test(n_neighbors_max):
+    mixture_test = 'mixture_test/'
+    foreground_test = 'foreground/'
 
-    return 0
+    mixes = get_mixture_paths2(mixture_test)
+    max_dur = 441000
 
+    print 'starting training'
+    r_stds, r_mean, sdrs = training_beat()
+    print 'finished training'
+
+    r_stds = np.array(r_stds).reshape((len(r_stds), 1))
+    sdrs = np.array(sdrs).reshape((len(sdrs), 1))
+
+    pred_std = []
+    act = []
+    for mix_path, (f_path, b_path) in mixes.items():
+        r = run_repet(mix_path, False)
+        cur_std = compute_beat_spectrum_statistics(r['feature'])[0]
+        pred_std.append(cur_std)
+
+        s = nussl.AudioSignal(join(foreground_test, f_path)).AudioData[0:max_dur]
+        se = r['separation'][0].AudioData[0:max_dur]
+
+        mir_eval.separation.validate(s.T, se.T)
+        act.append(mir_eval.separation.bss_eval_sources(s.T, se.T)[0][0])
+
+
+    NNcorr = []
+    neighbs = range(1, n_neighbors_max + 1)
+    for n in neighbs:
+        knn = neighbors.KNeighborsRegressor(n)
+        pred = []
+        for std in pred_std:
+            pred.append(knn.fit(r_stds, sdrs).predict(std)[0][0])
+        NNcorr.append(scipy.stats.pearsonr(pred, act)[0])
+
+    print NNcorr
+
+    SVRcorr = []
+    svr_types = ['rbf', 'linear']
+    for s_type in svr_types:
+        svr = SVR(kernel=s_type)
+        pred = []
+        for std in pred_std:
+            pred.append(svr.fit(r_stds, sdrs).predict(std)[0])
+        SVRcorr.append(scipy.stats.pearsonr(pred, act)[0])
+
+    plt.plot(neighbs, NNcorr, 'ro')
+    plt.xlabel('Number of Neighbors')
+    plt.ylabel('Pearson Correlation Coefficient')
+    plt.title('kNN Correlation')
+    plt.xlim([0, n_neighbors_max+1])
+    plt.ylim([min(NNcorr) - min(NNcorr)*0.2, max(NNcorr) + max(NNcorr)*0.2])
+    ax = plt.axes()
+    xa = ax.get_xaxis()
+    xa.set_major_locator(plt.MaxNLocator(integer=True))
+    plt.savefig('kNN_corr1.png')
+    plt.close()
+
+    plt.plot([1,2], SVRcorr, 'ro')
+    plt.xticks([0, 1], svr_types)
+    plt.xlabel('Support Vector Regressor')
+    plt.ylabel('Pearson Correlation Coefficient')
+    plt.title('SVR Type')
+    plt.margins(0.2)
+    plt.ylim([min(SVRcorr) - min(SVRcorr)*0.2, max(SVRcorr) + max(SVRcorr)*0.2])
+    ax = plt.axes()
+    xa = ax.get_xaxis()
+    xa.set_major_locator(plt.MaxNLocator(integer=True))
+    plt.savefig('SVR_corr.png')
+
+
+
+# eng = matlab.engine.start_matlab()
 
 def main():
-    do_sim = True
-    #eng = matlab.engine.start_matlab()
-    eng = 1
-    training(eng, do_sim)
-
-
-
+    print 'starting kNN test'
+    start = time()
+    do_kNN_test(10)
+    print time() - start, 'sec'
 
 
 #######################################################################

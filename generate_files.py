@@ -49,19 +49,39 @@ def generate_random_files_spectral_swap():
         if len(fgnd) > int(maxFileLength * fgnd.SampleRate):
             fgnd.setLength(int(maxFileLength * fgnd.SampleRate))
 
-        for bkgdFile in next(os.walk(bkgndOutputFolder))[2]:
-            path = join(bkgndOutputFolder, bkgdFile)
+        if len(fgnd) < int(maxFileLength * fgnd.SampleRate):
+            z = np.zeros((int(maxFileLength * fgnd.SampleRate) - len(fgnd)))
+            z = z[:, np.newaxis]
+            fgnd.AudioData = np.concatenate((fgnd.AudioData, z))
+            fgnd.SignalLength = int(maxFileLength * fgnd.SampleRate)
+            fgnd.WriteAudioFile(join(foregroundInputFolder, fgndFile), verbose=True)
 
-            if os.path.exists(path):
+        for bkgdFile in next(os.walk(bkgndOutputFolder))[2]:
+            combFileName = splitext(fgndFile)[0] + '__' + bkgdFile
+            combPath = join(mixtureOutputFolder, combFileName)
+
+            if os.path.exists(combPath):
                 print 'Skipping {0} & {1} because they\'re already combined :)'.format(fgndFile, bkgdFile)
                 continue
 
-            bkgd = AudioSignal(path)
+            path = join(bkgndOutputFolder, bkgdFile)
+            try:
+                bkgd = AudioSignal(path)
+                combined = bkgd + fgnd
+            except:
+                print('Couldn\'t read {}'.format(path))
+                continue
 
-            combined = bkgd + fgnd
-            combFileName = splitext(fgndFile)[0] + '__' + bkgdFile
-            combPath = join(mixtureOutputFolder, combFileName)
             combined.WriteAudioFile(combPath, sampleRate=Constants.DEFAULT_SAMPLE_RATE, verbose=True)
+
+    test_folder = 'mixture_test/'
+    percent = 0.1
+    all_examples = [f for f in os.listdir(mixtureOutputFolder) if isfile(join(mixtureOutputFolder, f))]
+    indices = random.sample(range(len(all_examples)), int(len(all_examples) * percent))
+    for i in indices:
+        cur = join(mixtureOutputFolder, all_examples[i])
+        dest = join(test_folder, all_examples[i])
+        os.rename(cur, dest)
 
 
 def create_looped_file(audioSignal, maxFileLength, fileName, outputFolder):

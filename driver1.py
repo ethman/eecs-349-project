@@ -7,8 +7,9 @@ import sys
 import numpy as np
 import scipy
 import math
-# import matlab.engine
+import matlab.engine
 import sklearn
+from sklearn import neighbors
 from sklearn.neighbors import NearestNeighbors
 from sklearn import svm
 from sklearn.neural_network import BernoulliRBM
@@ -108,6 +109,9 @@ def func(A, B):  # comparematrices(A,B):
 
 def get_mixture_paths():
     folder = 'training/'
+    return get_mixture_paths2(folder)
+
+def get_mixture_paths2(folder):
     fileNames = {}
     ext = '.wav'
     for file in [f for f in os.listdir(folder) if isfile(join(folder, f))]:
@@ -154,41 +158,67 @@ def compute_beat_spectrum_statistics(beat_spectrum):
     return np.std(beat_spectrum), np.mean(beat_spectrum)
 
 
-def training(eng, do_sim):
+def training_beat():
     mixture_paths = get_mixture_paths()
-    foreground_paths = get_foreground_paths()
-    background_paths = get_background_paths()
 
+    foreFolder = 'foreground/'
+    max_dur = 44
 
     r_stds = []
     r_mean = []
+    sdrs = []
     for m_path, (f_path, b_path) in mixture_paths.items():
-        r = run_repet(m_path, do_sim)
+        r = run_repet(m_path, False)
 
-        if do_sim:
-            r_stats = compute_beat_spectrum_statistics(r['feature'])
-            r_stds.append(r_stats[0])
-            r_mean.append(r_stats[1])
+        r_stats = compute_beat_spectrum_statistics(r['feature'])
+        r_stds.append(r_stats[0])
+        r_mean.append(r_stats[1])
+
+        s = matlab.double(nussl.AudioSignal(join(foreFolder, f_path)).AudioData[0:max_dur].tolist())
+        se = matlab.double(r['separation'][0].AudioData[0:max_dur].tolist())
 
 
 
         # call bss_eval
-        # SDR, SIR, SAR, perm = eng.bss_eval_sources(se, s)
+        global eng
+        sdrs.append(eng.bss_eval_sources(se, s)[0])
+
+    return r_stds, r_mean, sdrs
+
+def do_kNN_test(n_neighbors):
+    mixture_test = 'mixture_test/'
+    foreground_test = 'foreground/'
+
+    mixes = get_mixture_paths2(mixture_test)
+    max_dur = 44
+
+    print 'starting training'
+    r_stds, r_mean, sdrs = training_beat()
+    print 'finished training'
+
+    pred = []
+    act = []
+    for mix_path, (f_path, b_path) in mixes:
+        r = run_repet(mix_path, False)
+        cur_std = compute_beat_spectrum_statistics(r['feature'])[0]
+
+        knn = neighbors.KNeighborsRegressor(n_neighbors)
+        pred.append(knn.fit(r_stds, sdrs).predict(cur_std))
+
+        s = matlab.double(nussl.AudioSignal(join(foreground_test, f_path)).AudioData[0:max_dur].tolist())
+        se = matlab.double(r['separation'][0].AudioData[0:max_dur].tolist())
+
+        global eng
+        act.append(eng.bss_eval_sources(se, s)[0])
+
+    print scipy.stats.pearsonr(pred, act)
 
 
-    plt.plot(r_mean, r_stds, 'ro')
-    plt.xlabel('Beat spectrum mean')
-    plt.ylabel('Beat spectrum std deviation')
-    plt.savefig('beat_spec.png')
-
-    return 0
-
+eng = matlab.engine.start_matlab()
 
 def main():
-    do_sim = True
-    #eng = matlab.engine.start_matlab()
-    eng = 1
-    training(eng, do_sim)
+    print 'starting kNN test'
+    do_kNN_test(5)
 
 
 
